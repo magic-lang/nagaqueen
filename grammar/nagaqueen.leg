@@ -399,6 +399,12 @@ void *nq_onBinaryOr(void *this, void *left, void *right);
 void *nq_onBinaryXor(void *this, void *left, void *right);
 void *nq_onBinaryAnd(void *this, void *left, void *right);
 
+void nq_onSafeNavigationStart(void *this, void *expr);
+void nq_onSafeNavigationSection(void *this);
+void nq_onSafeNavigationIdent(void *this, char *ident);
+void nq_onSafeNavigationMethod(void *this, void *fcall);
+void *nq_onSafeNavigationEnd(void *this);
+
 void *nq_onLogicalNot(void *this, void *inner);
 void *nq_onBinaryNot(void *this, void *inner);
 void *nq_onUnaryMinus(void *this, void *inner);
@@ -524,7 +530,8 @@ VersionSpec = ((- '(' - l:VersionSpec - ')') | (l:VersionCore))
 VersionCore = (VersionNegation | VersionName)
 
 VersionName = - < [a-zA-Z0-9_]+ > { tokenPos; $$=nq_onVersionName(core->this, yytext) }
-VersionNegation = - '!' { tokenPos; } - spec:VersionSpec { $$=nq_onVersionNegation(core->this, spec) }
+VersionNegation = (- '!' { tokenPos; } - spec:VersionName { $$=nq_onVersionNegation(core->this, spec) }) |
+                   (- '!' { tokenPos; } - '(' - spec:VersionSpec - ')' { $$=nq_onVersionNegation(core->this, spec) })
 
 Use = USE_KW [ \t]
       - UseCore
@@ -618,7 +625,7 @@ OperatorDecl =
             ("@" { nq_onOperatorByref(core->this) })?
             - < ( "=>" | "<=>"| ">>="| "<<="| ">>" | "<<"
                 | ">=" | "<=" | "!=" | "==" | ">" | "<" | "!" | "??"
-                | "+=" | "-=" | "*=" | "**="| "/=" | "%=" | "+" | "-" | "**" | "/" | "*" | "=" 
+                | "+=" | "-=" | "*=" | "**="| "/=" | "%=" | "+" | "-" | "**" | "/" | "*" | "="
                 | "[]="| "[]" | "&&" | "||" | "%" | "as" | "implicit as"
                 | "&=" | "|=" | "^=" | "&"  | "|" | "^" | "~"
                 ) >
@@ -683,7 +690,7 @@ FunctionDeclBody = (
                 WS CLOS_PAREN ~{ throwError(NQE_EXP_ARG, "Malformed function argument (remember, it's `name: Type` in ooc, not `Type name`)\n") }
                               { nq_onFunctionArgsEnd(core->this) }
             )?
-            
+
             # optional suffix
             (
             - '~' suffix:IDENT { throwTokenError(NQE_MISPLACED_SUFFIX, "Misplaced function suffix (remember, it's `name: func ~suffix (args)`, not `name: func (args) ~suffix`") }
@@ -733,6 +740,8 @@ ClassDecl   = (
             - CLASS_KW
 
             GenericArguments?
+
+            TemplateDef?
 
             # subclassing
             (
@@ -1222,7 +1231,7 @@ Stmt     = (
 StmtCore = (
               # some statements need an EOL after them...
               e:EoledStatement
-              (Terminator+ | (WS &'}') | (WS &')') | (WS &',') | (&CommentLine))
+              (Terminator+ | (WS &'}') | (WS &')') | (WS &',') | (&CommentLine) | (&PreprocessorBeginRegion) | (&PreprocessorEndRegion))
            )
           | # ...but blocks don't
           ( WS c:Conditional
@@ -1340,7 +1349,7 @@ CaseExpr = ( v:VariableDecl -
 
 DoubleArrow = l:Assignment
               DOUBLE_ARROW { tokenPos; } WS r:Expr        ~{  missingOp("=>") } { $$=l=nq_onDoubleArrow(core->this, l, r); }
-            
+
 #operators
 
 BinaryOperation = Assignment
@@ -1428,11 +1437,16 @@ Product = (ProductLogicalNot | ProductBinaryNot | ProductCore)
 ProductLogicalNot = L_NOT { tokenPos; } - (inner:Product) - { $$=inner=nq_onLogicalNot(core->this, inner); }
 ProductBinaryNot  = B_NOT { tokenPos; } - (inner:Product) - { $$=inner=nq_onBinaryNot (core->this, inner); }
 
-ProductCore = l:Access
+ProductCore = l:SafeNavAccess
                     ( EXP         { tokenPos; }  WS r:Product             { $$=l=nq_onExp(core->this, l, r); }
-                    | STAR        { tokenPos; }  WS r:Access              { $$=l=nq_onMul(core->this, l, r); }
-                    | SLASH       { tokenPos; }  WS r:Access              { $$=l=nq_onDiv(core->this, l, r); }
+                    | STAR        { tokenPos; }  WS r:SafeNavAccess       { $$=l=nq_onMul(core->this, l, r); }
+                    | SLASH       { tokenPos; }  WS r:SafeNavAccess       { $$=l=nq_onDiv(core->this, l, r); }
                     )*
+
+
+SafeNavAccess = expr:Access ( { tokenPos; nq_onSafeNavigationStart(core->this, expr); }
+                              ( SAFE_NAV { nq_onSafeNavigationSection(core->this); } - ((  (f:FunctionCall { nq_onSafeNavigationMethod(core->this, f); }) | (i:IDENT_CORE { nq_onSafeNavigationIdent(core->this, i); }) ) -)+)+
+                              { $$=nq_onSafeNavigationEnd(core->this); })?
 
 Access =  ((ident:IDENT_CORE { tokenPos; } '&' ![&=] - { core->token[1] += 1; $$=l=nq_onAddressOf(core->this, nq_onVarAccess(core->this, NULL, ident)); }) # special case: blah& is always a reference. blah & blih is a binary and.
           | l:Value)
@@ -1488,8 +1502,8 @@ VariableAccess = i:IDENT_CORE
 
 Value   = ('-' - '(' { tokenPos; } WS inner:Expr WS ')' { $$=nq_onUnaryMinus(core->this, nq_onParenthesis(core->this, inner)); } -)
         | ('+' - '(' { tokenPos; } WS inner:Expr WS ')' { $$=nq_onUnaryPlus(core->this, nq_onParenthesis(core->this, inner)); } -)
-        | ('-' - { tokenPos; } access:Access { $$=nq_onUnaryMinus(core->this, access); })
-        | ('+' - { tokenPos; } access:Access { $$=nq_onUnaryPlus(core->this, access); })
+        | ('-' - { tokenPos; } access:SafeNavAccess { $$=nq_onUnaryMinus(core->this, access); })
+        | ('+' - { tokenPos; } access:SafeNavAccess { $$=nq_onUnaryPlus(core->this, access); })
         | ('(' { tokenPos; } WS inner:Expr WS ')' { $$=nq_onParenthesis(core->this, inner); } ('&' ![&=] { $$=nq_onAddressOf(core->this, $$); })? -)
         | ValueCore
 
@@ -1650,6 +1664,8 @@ EXP          = '**' ! '='  -
 STAR         = '*' !'='  -
 SLASH        = '/' !'=' ![/*]   -
 
+SAFE_NAV     = '$'
+
 CLOS_BRACK    = '}'
 CLOS_SQUAR    = ']'
 CLOS_PAREN    = ')'
@@ -1660,7 +1676,7 @@ EOL        = ('\n' | '\r\n' | '\r')  { core->yylineno++; }
 Terminator = (CommentLine
            | CommentMultiLine? (EOL | ';')
              )
-WS         = ([ \t] | Comment | EOL)*
+WS         = ([ \t] | Comment | PreprocessorBeginRegion | PreprocessorEndRegion | EOL)*
 
 OocDocCore = "/**" !'*' < (!"*/" (EOL | .))* > "*/" { $$=nq_StringClone(yytext) } WS
            | "///" !'/' < (!EOL .)*          > EOL  { $$=nq_StringClone(yytext) } WS
@@ -1669,6 +1685,8 @@ Comment = !OocDocCore (CommentLine | CommentMultiLine)
 CommentLine = "//" (!EOL .)* EOL
 CommentMultiLine =    "/*" (!"*/" (EOL | CommentMultiLineWithDocs | .))* CLOS_COMMENT ~{ throwError(NQE_UNCLOSED_COMMENT, "Unclosed multi-line comment!\n"); }
 CommentMultiLineWithDocs = "/*" '*'? (!"*/" (EOL | CommentMultiLineWithDocs | .))* CLOS_COMMENT ~{ throwError(NQE_UNCLOSED_COMMENT, "Unclosed multi-line comment!\n"); }
+PreprocessorBeginRegion = "#region" (!EOL .)* EOL
+PreprocessorEndRegion = "#endregion" (!EOL .)* EOL
 
 INT_LIT_SUFFIX = [uUlL]*
 FP_LIT_SUFFIX = ([fF] | [lL])?
@@ -1683,7 +1701,7 @@ IDENT_CORE   = !(KW ![A-Za-z0-9_])  # a keyword is not an ident
                < [a-zA-Z_][0-9a-zA-Z_]* > { $$=yytext; }
                ( '?' { $$=nq_trailingQuest($$); }
                | '!' { $$=nq_trailingBang($$); })?
-               
+
 SINGLE_QUOTE = '\''
 DOUBLE_QUOTE = '"'
 
@@ -1691,7 +1709,7 @@ RAW_STRING_LIT = 'c' s:STRING_LIT { nq_onRawStringLiteral(core->this, s); }
 TEXT_STRING_LIT = 't' s:STRING_LIT { nq_onTextLiteral(core->this, s); }
 
 # Strings are split into text chuncks and interpolated expressions
-StringChunk  = Interpolation | TextChunk 
+StringChunk  = Interpolation | TextChunk
 
 Interpolation= !'"' !"\\" "#{" - e: Expr - "}"
                 { nq_onStringInterpolation(core->this, e); }
