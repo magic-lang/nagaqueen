@@ -1441,7 +1441,7 @@ ProductCore = l:SafeNavAccess
                     )*
 
 SafeNavAccess = expr:Access ( { tokenPos; nq_onSafeNavigationStart(core->this, expr); } 
-                              (  SAFE_NAV { nq_onSafeNavigationSection(core->this); } (- (i:IDENT_CORE { nq_onSafeNavigationIdent(core->this, i); } | f:FunctionCall { nq_onSafeNavigationMethod(core->this, f); }))+)+ 
+                              ( SAFE_NAV { nq_onSafeNavigationSection(core->this); } - ((  (f:FunctionCall { nq_onSafeNavigationMethod(core->this, f); }) | (i:IDENT_CORE { nq_onSafeNavigationIdent(core->this, i); }) ) -)+)+ 
                               { $$=nq_onSafeNavigationEnd(core->this); })?
 
 Access =  ((ident:IDENT_CORE { tokenPos; } '&' ![&=] - { core->token[1] += 1; $$=l=nq_onAddressOf(core->this, nq_onVarAccess(core->this, NULL, ident)); }) # special case: blah& is always a reference. blah & blih is a binary and.
@@ -1498,8 +1498,8 @@ VariableAccess = i:IDENT_CORE
 
 Value   = ('-' - '(' { tokenPos; } WS inner:Expr WS ')' { $$=nq_onUnaryMinus(core->this, nq_onParenthesis(core->this, inner)); } -)
         | ('+' - '(' { tokenPos; } WS inner:Expr WS ')' { $$=nq_onUnaryPlus(core->this, nq_onParenthesis(core->this, inner)); } -)
-        | ('-' - { tokenPos; } access:Access { $$=nq_onUnaryMinus(core->this, access); })
-        | ('+' - { tokenPos; } access:Access { $$=nq_onUnaryPlus(core->this, access); })
+        | ('-' - { tokenPos; } access:SafeNavAccess { $$=nq_onUnaryMinus(core->this, access); })
+        | ('+' - { tokenPos; } access:SafeNavAccess { $$=nq_onUnaryPlus(core->this, access); })
         | ('(' { tokenPos; } WS inner:Expr WS ')' { $$=nq_onParenthesis(core->this, inner); } ('&' ![&=] { $$=nq_onAddressOf(core->this, $$); })? -)
         | ValueCore
 
