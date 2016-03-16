@@ -624,7 +624,7 @@ OperatorDecl =
             ("@" { nq_onOperatorByref(core->this) })?
             - < ( "=>" | "<=>"| ">>="| "<<="| ">>" | "<<"
                 | ">=" | "<=" | "!=" | "==" | ">" | "<" | "!" | "??"
-                | "+=" | "-=" | "*=" | "**="| "/=" | "%=" | "+" | "-" | "**" | "/" | "*" | "=" 
+                | "+=" | "-=" | "*=" | "**="| "/=" | "%=" | "+" | "-" | "**" | "/" | "*" | "="
                 | "[]="| "[]" | "&&" | "||" | "%" | "as" | "implicit as"
                 | "&=" | "|=" | "^=" | "&"  | "|" | "^" | "~"
                 ) >
@@ -689,7 +689,7 @@ FunctionDeclBody = (
                 WS CLOS_PAREN ~{ throwError(NQE_EXP_ARG, "Malformed function argument (remember, it's `name: Type` in ooc, not `Type name`)\n") }
                               { nq_onFunctionArgsEnd(core->this) }
             )?
-            
+
             # optional suffix
             (
             - '~' suffix:IDENT { throwTokenError(NQE_MISPLACED_SUFFIX, "Misplaced function suffix (remember, it's `name: func ~suffix (args)`, not `name: func (args) ~suffix`") }
@@ -739,6 +739,8 @@ ClassDecl   = (
             - CLASS_KW
 
             GenericArguments?
+
+            TemplateDef?
 
             # subclassing
             (
@@ -1228,7 +1230,7 @@ Stmt     = (
 StmtCore = (
               # some statements need an EOL after them...
               e:EoledStatement
-              (Terminator+ | (WS &'}') | (WS &')') | (WS &',') | (&CommentLine))
+              (Terminator+ | (WS &'}') | (WS &')') | (WS &',') | (&CommentLine) | (&PreprocessorBeginRegion) | (&PreprocessorEndRegion))
            )
           | # ...but blocks don't
           ( WS c:Conditional
@@ -1346,7 +1348,7 @@ CaseExpr = ( v:VariableDecl -
 
 DoubleArrow = l:Assignment
               DOUBLE_ARROW { tokenPos; } WS r:Expr        ~{  missingOp("=>") } { $$=l=nq_onDoubleArrow(core->this, l, r); }
-            
+
 #operators
 
 BinaryOperation = Assignment
@@ -1440,8 +1442,9 @@ ProductCore = l:SafeNavAccess
                     | SLASH       { tokenPos; }  WS r:SafeNavAccess       { $$=l=nq_onDiv(core->this, l, r); }
                     )*
 
-SafeNavAccess = expr:Access ( { tokenPos; nq_onSafeNavigationStart(core->this, expr); } 
-                              ( SAFE_NAV { nq_onSafeNavigationSection(core->this); } - ((  (f:FunctionCall { nq_onSafeNavigationMethod(core->this, f); }) | (i:IDENT_CORE { nq_onSafeNavigationIdent(core->this, i); }) ) -)+)+ 
+
+SafeNavAccess = expr:Access ( { tokenPos; nq_onSafeNavigationStart(core->this, expr); }
+                              ( SAFE_NAV { nq_onSafeNavigationSection(core->this); } - ((  (f:FunctionCall { nq_onSafeNavigationMethod(core->this, f); }) | (i:IDENT_CORE { nq_onSafeNavigationIdent(core->this, i); }) ) -)+)+
                               { $$=nq_onSafeNavigationEnd(core->this); })?
 
 Access =  ((ident:IDENT_CORE { tokenPos; } '&' ![&=] - { core->token[1] += 1; $$=l=nq_onAddressOf(core->this, nq_onVarAccess(core->this, NULL, ident)); }) # special case: blah& is always a reference. blah & blih is a binary and.
@@ -1672,7 +1675,7 @@ EOL        = ('\n' | '\r\n' | '\r')  { core->yylineno++; }
 Terminator = (CommentLine
            | CommentMultiLine? (EOL | ';')
              )
-WS         = ([ \t] | Comment | EOL)*
+WS         = ([ \t] | Comment | PreprocessorBeginRegion | PreprocessorEndRegion | EOL)*
 
 OocDocCore = "/**" !'*' < (!"*/" (EOL | .))* > "*/" { $$=nq_StringClone(yytext) } WS
            | "///" !'/' < (!EOL .)*          > EOL  { $$=nq_StringClone(yytext) } WS
@@ -1681,6 +1684,8 @@ Comment = !OocDocCore (CommentLine | CommentMultiLine)
 CommentLine = "//" (!EOL .)* EOL
 CommentMultiLine =    "/*" (!"*/" (EOL | CommentMultiLineWithDocs | .))* CLOS_COMMENT ~{ throwError(NQE_UNCLOSED_COMMENT, "Unclosed multi-line comment!\n"); }
 CommentMultiLineWithDocs = "/*" '*'? (!"*/" (EOL | CommentMultiLineWithDocs | .))* CLOS_COMMENT ~{ throwError(NQE_UNCLOSED_COMMENT, "Unclosed multi-line comment!\n"); }
+PreprocessorBeginRegion = "#region" (!EOL .)* EOL
+PreprocessorEndRegion = "#endregion" (!EOL .)* EOL
 
 INT_LIT_SUFFIX = [uUlL]*
 FP_LIT_SUFFIX = ([fF] | [lL])?
@@ -1695,7 +1700,7 @@ IDENT_CORE   = !(KW ![A-Za-z0-9_])  # a keyword is not an ident
                < [a-zA-Z_][0-9a-zA-Z_]* > { $$=yytext; }
                ( '?' { $$=nq_trailingQuest($$); }
                | '!' { $$=nq_trailingBang($$); })?
-               
+
 SINGLE_QUOTE = '\''
 DOUBLE_QUOTE = '"'
 
@@ -1703,7 +1708,7 @@ RAW_STRING_LIT = 'c' s:STRING_LIT { nq_onRawStringLiteral(core->this, s); }
 TEXT_STRING_LIT = 't' s:STRING_LIT { nq_onTextLiteral(core->this, s); }
 
 # Strings are split into text chuncks and interpolated expressions
-StringChunk  = Interpolation | TextChunk 
+StringChunk  = Interpolation | TextChunk
 
 Interpolation= !'"' !"\\" "#{" - e: Expr - "}"
                 { nq_onStringInterpolation(core->this, e); }
